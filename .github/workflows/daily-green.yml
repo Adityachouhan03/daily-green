@@ -50,6 +50,7 @@ jobs:
             cd repo_tmp
 
             # Write tiny timestamp file and commit
+            mkdir -p .github
             echo "$TIMESTAMP" > .github/last_green.txt
             git add .github/last_green.txt
 
