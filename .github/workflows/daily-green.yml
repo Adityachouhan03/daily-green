@@ -1,0 +1,69 @@
+name: Daily Green — All Repos
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # 2:00 AM UTC every day
+  workflow_dispatch:         # Manual trigger from GitHub Actions tab
+
+jobs:
+  commit-all-repos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Commit to every repo in the account
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_USER:  ${{ secrets.GH_USERNAME }}
+        run: |
+          set -e
+
+          git config --global user.name  "daily-green[bot]"
+          git config --global user.email "daily-green[bot]@users.noreply.github.com"
+
+          # Fetch all repos (handles pagination up to 1000 repos)
+          PAGE=1
+          REPOS=()
+          while true; do
+            BATCH=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/user/repos?per_page=100&page=$PAGE&type=owner" \
+              | jq -r '.[].full_name')
+            [ -z "$BATCH" ] && break
+            while IFS= read -r r; do REPOS+=("$r"); done <<< "$BATCH"
+            PAGE=$((PAGE + 1))
+          done
+
+          echo "Found ${#REPOS[@]} repos to update."
+
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          for REPO in "${REPOS[@]}"; do
+            # Skip the controller repo itself
+            [ "$REPO" = "$GH_USER/$daily-green" ] && continue
+
+            echo "--- Updating $REPO ---"
+
+            # Clone (shallow, only default branch)
+            git clone --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+              repo_tmp 2>/dev/null || { echo "⚠️  Skipped $REPO (clone failed)"; continue; }
+
+            cd repo_tmp
+
+            # Write tiny timestamp file and commit
+            echo "$TIMESTAMP" > .github/last_green.txt
+            git add .github/last_green.txt
+
+            # Only commit if there's actually a change (idempotent)
+            if git diff --cached --quiet; then
+              echo "No change needed for $REPO"
+            else
+              git commit -m "chore: daily auto-commit [$TIMESTAMP]" --no-verify
+              git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD 2>/dev/null \
+                || echo "⚠️  Push failed for $REPO (no write access?), skipping."
+            fi
+
+            cd ..
+            rm -rf repo_tmp
+          done
+
+          echo "✅ Done! All repos updated."
